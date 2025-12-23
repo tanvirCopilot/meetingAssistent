@@ -1,0 +1,11 @@
+# Optional ML dependencies (large; install only when ready)
+#
+# Notes (Windows):
+# - Install a compatible PyTorch build first (CPU or CUDA).
+# - Then install openai-whisper.
+#
+# Example (CPU-only, may change):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-ml.txt
+
+openai-whisper==20231117
