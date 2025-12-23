@@ -17,6 +17,7 @@ export type RecordingResult = {
   segments: TranscriptSegment[];
   summaryBullets: string[];
   actionItems: string[];
+  speakerNames?: Record<string, string>;
 };
 
 type AppState = {
@@ -25,13 +26,18 @@ type AppState = {
 
   isRecording: boolean;
   recordingStartedAtMs: number | null;
+  recordingDirectory: string | null;
+  selectedMicId: string | null;
 
   lastError: string | null;
   lastResult: RecordingResult | null;
 
   setMeetingTitle: (title: string) => void;
   goHome: () => void;
+  clearError: () => void;
   startRecordingUI: () => void;
+  setRecordingDirectory: (dir: string | null) => void;
+  setSelectedMicId: (id: string | null) => void;
   stopRecordingUI: () => void;
   setError: (message: string | null) => void;
   setResult: (result: RecordingResult) => void;
@@ -42,6 +48,8 @@ type AppState = {
 export const useAppStore = create<AppState>((set, get) => ({
   screen: 'home',
   meetingTitle: '',
+  recordingDirectory: typeof window !== 'undefined' ? (localStorage.getItem('sidecar_recording_dir') || null) : null,
+  selectedMicId: typeof window !== 'undefined' ? (localStorage.getItem('sidecar_selected_mic') || null) : null,
 
   isRecording: false,
   recordingStartedAtMs: null,
@@ -50,7 +58,27 @@ export const useAppStore = create<AppState>((set, get) => ({
   lastResult: null,
 
   setMeetingTitle: (meetingTitle) => set({ meetingTitle }),
-  goHome: () => set({ screen: 'home', lastError: null }),
+  goHome: () => set({ screen: 'home' }),
+  clearError: () => set({ lastError: null }),
+
+  setRecordingDirectory: (dir) => {
+    try {
+      if (dir) localStorage.setItem('sidecar_recording_dir', dir);
+      else localStorage.removeItem('sidecar_recording_dir');
+    } catch (e) {
+      // ignore storage errors
+    }
+    set({ recordingDirectory: dir });
+  },
+  setSelectedMicId: (id) => {
+    try {
+      if (id) localStorage.setItem('sidecar_selected_mic', id);
+      else localStorage.removeItem('sidecar_selected_mic');
+    } catch (e) {
+      // ignore storage errors
+    }
+    set({ selectedMicId: id });
+  },
 
   startRecordingUI: () => {
     const title = get().meetingTitle.trim();
@@ -62,11 +90,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       screen: 'recording',
       isRecording: true,
-      recordingStartedAtMs: Date.now(),
+      // recordingStartedAtMs will be set when capture actually begins
+      recordingStartedAtMs: null,
       lastError: null,
       lastResult: null,
     });
   },
+
+  markRecordingStarted: () => set({ recordingStartedAtMs: Date.now() }),
 
   stopRecordingUI: () =>
     set({

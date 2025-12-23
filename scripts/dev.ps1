@@ -26,12 +26,31 @@ Write-Host "[Side-Car] Installing backend deps (if needed)..." -ForegroundColor 
 Set-Location $backendDir
 & $venvPython -m pip install -r requirements.txt | Out-Host
 
-Write-Host "[Side-Car] Starting backend on http://127.0.0.1:8765 ..." -ForegroundColor Yellow
-$backendProc = Start-Process `
-  -FilePath $venvPython `
-  -ArgumentList @('-m','uvicorn','app.main:app','--app-dir','.', '--host','127.0.0.1','--port','8765','--reload') `
-  -WorkingDirectory $backendDir `
-  -PassThru
+$backendProc = $null
+$startedBackend = $false
+
+$backendHealthUrl = 'http://127.0.0.1:8765/health'
+$backendAlreadyRunning = $false
+try {
+  $resp = Invoke-WebRequest -UseBasicParsing $backendHealthUrl -TimeoutSec 1
+  if ($resp.StatusCode -eq 200) {
+    $backendAlreadyRunning = $true
+  }
+} catch {
+  $backendAlreadyRunning = $false
+}
+
+if ($backendAlreadyRunning) {
+  Write-Host "[Side-Car] Backend already running at $backendHealthUrl (skipping start)." -ForegroundColor DarkYellow
+} else {
+  Write-Host "[Side-Car] Starting backend on http://127.0.0.1:8765 ..." -ForegroundColor Yellow
+  $backendProc = Start-Process `
+    -FilePath $venvPython `
+    -ArgumentList @('-m','uvicorn','app.main:app','--app-dir','.', '--host','127.0.0.1','--port','8765','--reload') `
+    -WorkingDirectory $backendDir `
+    -PassThru
+  $startedBackend = $true
+}
 
 try {
   Write-Host "[Side-Car] Starting desktop app..." -ForegroundColor Yellow
@@ -40,7 +59,7 @@ try {
 }
 finally {
   Write-Host "[Side-Car] Stopping backend..." -ForegroundColor Yellow
-  if ($null -ne $backendProc -and -not $backendProc.HasExited) {
+  if ($startedBackend -and $null -ne $backendProc -and -not $backendProc.HasExited) {
     Stop-Process -Id $backendProc.Id -Force -ErrorAction SilentlyContinue
   }
 }

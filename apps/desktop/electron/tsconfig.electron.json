@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "CommonJS",
-    "outDir": "dist-electron",
+    "outDir": "../dist-electron",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true

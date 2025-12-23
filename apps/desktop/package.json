@@ -2,10 +2,10 @@
   "name": "side-car-desktop",
   "private": true,
   "version": "0.1.0",
-  "type": "module",
+  "type": "commonjs",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"npm run electron:build:watch\" \"wait-on http://127.0.0.1:5174 && electron .\"",
+    "dev": "concurrently -k \"vite\" \"npm run electron:build:watch\" \"wait-on http://localhost:5174 dist-electron/preload.js && electron .\"",
     "electron:build": "node electron/build.js",
     "electron:build:watch": "tsc -p electron/tsconfig.electron.json --watch --preserveWatchOutput",
     "build": "npm run electron:build && vite build && electron-builder",

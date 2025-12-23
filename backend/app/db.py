@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .config import get_settings
+from .crypto import decrypt_json, encrypt_json
 from .storage import get_db_path
 
 
@@ -59,13 +61,33 @@ def update_processing_result(
     transcript: dict[str, Any] | None,
     summary: dict[str, Any] | None,
 ) -> None:
+    settings = get_settings()
     conn = _connect(get_db_path())
     try:
+        transcript_json: str | None
+        summary_json: str | None
+
+        if transcript is None:
+            transcript_json = None
+        else:
+            if settings.storage_passphrase:
+                transcript_json = json.dumps(encrypt_json(json.dumps(transcript), settings.storage_passphrase))
+            else:
+                transcript_json = json.dumps(transcript)
+
+        if summary is None:
+            summary_json = None
+        else:
+            if settings.storage_passphrase:
+                summary_json = json.dumps(encrypt_json(json.dumps(summary), settings.storage_passphrase))
+            else:
+                summary_json = json.dumps(summary)
+
         conn.execute(
             "UPDATE recordings SET transcript_json=?, summary_json=? WHERE id=?",
             (
-                json.dumps(transcript) if transcript is not None else None,
-                json.dumps(summary) if summary is not None else None,
+                transcript_json,
+                summary_json,
                 recording_id,
             ),
         )
@@ -75,13 +97,28 @@ def update_processing_result(
 
 
 def get_recording(recording_id: str) -> dict[str, Any] | None:
+    settings = get_settings()
     conn = _connect(get_db_path())
     try:
         row = conn.execute("SELECT * FROM recordings WHERE id=?", (recording_id,)).fetchone()
         if row is None:
             return None
-        transcript = json.loads(row["transcript_json"]) if row["transcript_json"] else None
-        summary = json.loads(row["summary_json"]) if row["summary_json"] else None
+
+        transcript = None
+        if row["transcript_json"]:
+            raw = json.loads(row["transcript_json"])
+            if isinstance(raw, dict) and "_enc" in raw and settings.storage_passphrase:
+                transcript = json.loads(decrypt_json(raw, settings.storage_passphrase))
+            else:
+                transcript = raw
+
+        summary = None
+        if row["summary_json"]:
+            raw = json.loads(row["summary_json"])
+            if isinstance(raw, dict) and "_enc" in raw and settings.storage_passphrase:
+                summary = json.loads(decrypt_json(raw, settings.storage_passphrase))
+            else:
+                summary = raw
         return {
             "id": row["id"],
             "title": row["title"],

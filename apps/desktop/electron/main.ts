@@ -1,5 +1,6 @@
 import { app, BrowserWindow, desktopCapturer, dialog, ipcMain } from 'electron';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 
 const isDev = !app.isPackaged;
 
@@ -15,7 +16,7 @@ function createWindow() {
   });
 
   if (isDev) {
-    win.loadURL('http://127.0.0.1:5174');
+    win.loadURL('http://localhost:5174');
     win.webContents.openDevTools({ mode: 'detach' });
   } else {
     win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
@@ -40,6 +41,21 @@ app.whenReady().then(() => {
       filters: [{ name: 'Audio', extensions: ['webm', 'ogg'] }],
     });
     return result.canceled ? null : result.filePath ?? null;
+  });
+
+  ipcMain.handle('sidecar:selectDirectory', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Select folder to save recordings',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  ipcMain.handle('sidecar:writeFile', async (_evt, absolutePath: string, bytesArray: number[]) => {
+    const buf = Buffer.from(bytesArray);
+    await fs.writeFile(absolutePath, buf);
+    return true;
   });
 
   createWindow();

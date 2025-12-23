@@ -23,7 +23,7 @@ type RecorderState = {
 
 async function getSystemAudioStream(): Promise<MediaStream> {
   const sidecar = window.sidecar;
-  if (!sidecar) throw new Error('Electron preload bridge is not available.');
+  if (!sidecar) throw new Error('Desktop app required — run the app via the Electron desktop (npm run dev).');
 
   const sourceId = await sidecar.getDefaultDesktopSourceId();
   if (!sourceId) {
@@ -57,8 +57,12 @@ async function getSystemAudioStream(): Promise<MediaStream> {
   return new MediaStream(stream.getAudioTracks());
 }
 
-async function getMicStream(): Promise<MediaStream> {
-  return navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+async function getMicStream(deviceId?: string): Promise<MediaStream> {
+  const constraints: MediaStreamConstraints = {
+    audio: deviceId ? ({ deviceId: { exact: deviceId } } as any) : true,
+    video: false,
+  };
+  return navigator.mediaDevices.getUserMedia(constraints);
 }
 
 function mixToSingleStream(systemAudio: MediaStream, mic: MediaStream): MediaStream {
@@ -81,10 +85,17 @@ export function RecordingScreen() {
   const setError = useAppStore((s) => s.setError);
   const setResult = useAppStore((s) => s.setResult);
   const goHome = useAppStore((s) => s.goHome);
+  const markRecordingStarted = useAppStore((s) => (s as any).markRecordingStarted);
+  const isRecording = useAppStore((s) => s.isRecording);
+  const recordingDirectory = useAppStore((s) => (s as any).recordingDirectory);
+  const selectedMicId = useAppStore((s) => (s as any).selectedMicId);
 
   const [elapsedMs, setElapsedMs] = useState(0);
   const [isStopping, setIsStopping] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [micOnly, setMicOnly] = useState(false);
+  const [testMicActive, setTestMicActive] = useState(false);
+  const [micLevel, setMicLevel] = useState(0);
 
   const recorderRef = useRef<RecorderState>({
     isCapturing: false,
@@ -93,6 +104,9 @@ export function RecordingScreen() {
     mimeType: null,
     audioPath: null,
   });
+  const testMicStreamRef = useRef<MediaStream | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const rafRef = useRef<number | null>(null);
 
   const elapsedLabel = useMemo(() => formatElapsed(elapsedMs), [elapsedMs]);
 
@@ -112,14 +126,38 @@ export function RecordingScreen() {
     async function startCapture() {
       try {
         const sidecar = window.sidecar;
-        if (!sidecar) throw new Error('Electron preload bridge is not available.');
+        if (!sidecar) throw new Error('Desktop app required — run the app via the Electron desktop (npm run dev).');
+
+        // if a mic test is running, stop it before starting actual capture
+        if (testMicActive) stopTestMic();
 
         recorderRef.current.isCapturing = true;
 
-        const [systemAudio, mic] = await Promise.all([getSystemAudioStream(), getMicStream()]);
+        // Attempt system audio + mic; respect micOnly toggle.
+        let systemAudio: MediaStream | null = null;
+        let mic: MediaStream | null = null;
+
+        if (!micOnly) {
+          try {
+            systemAudio = await getSystemAudioStream();
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn('getSystemAudioStream failed, will continue with mic-only', err);
+            systemAudio = null;
+          }
+        }
+
+        try {
+          mic = await getMicStream(selectedMicId ?? undefined);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error('getMicStream failed', err);
+          throw err;
+        }
+
         if (cancelled) return;
 
-        const mixed = mixToSingleStream(systemAudio, mic);
+        const mixed = systemAudio && systemAudio.getAudioTracks().length > 0 ? mixToSingleStream(systemAudio, mic) : mic;
 
         const candidates = [
           'audio/webm;codecs=opus',
@@ -131,12 +169,35 @@ export function RecordingScreen() {
 
         const mediaRecorder = new MediaRecorder(mixed, mimeType ? { mimeType } : undefined);
 
+
         recorderRef.current.mediaRecorder = mediaRecorder;
         recorderRef.current.mimeType = mimeType || null;
         recorderRef.current.chunks = [];
 
         mediaRecorder.ondataavailable = (evt) => {
-          if (evt.data && evt.data.size > 0) recorderRef.current.chunks.push(evt.data);
+          if (evt.data && evt.data.size > 0) {
+            recorderRef.current.chunks.push(evt.data);
+            // eslint-disable-next-line no-console
+            console.log('ondataavailable chunk size=', evt.data.size);
+          }
+        };
+
+        mediaRecorder.onstart = () => {
+          try {
+            // eslint-disable-next-line no-console
+            console.log('mediaRecorder started, mimeType=', mediaRecorder.mimeType);
+            const tracks = mixed.getAudioTracks();
+            // eslint-disable-next-line no-console
+            console.log('mixed audio tracks:', tracks.map((t) => ({ id: t.id, label: t.label })));
+            try {
+              markRecordingStarted();
+            } catch (e) {
+              // ignore if store method missing
+            }
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('failed to log mixed tracks', e);
+          }
         };
 
         mediaRecorder.onerror = () => {
@@ -147,7 +208,15 @@ export function RecordingScreen() {
           .toISOString()
           .replaceAll(':', '-')}.webm`;
 
-        const savePath = await sidecar.showSaveDialog(defaultName);
+        let savePath: string | null = null;
+        if (recordingDirectory) {
+          // build path using simple join; use '/' as separator if missing
+          const sep = recordingDirectory.endsWith('\\') || recordingDirectory.endsWith('/') ? '' : '/';
+          savePath = `${recordingDirectory}${sep}${defaultName}`;
+        } else {
+          savePath = await sidecar.showSaveDialog(defaultName);
+        }
+
         if (!savePath) {
           throw new Error('Save cancelled.');
         }
@@ -169,13 +238,75 @@ export function RecordingScreen() {
     };
   }, [meetingTitle, setError, stopRecordingUI, goHome]);
 
+  // Test mic functions
+  async function startTestMic() {
+    if (testMicActive) return;
+    try {
+      const stream = await getMicStream(selectedMicId ?? undefined);
+      testMicStreamRef.current = stream;
+
+      const ctx = new AudioContext();
+      const src = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      src.connect(analyser);
+      analyserRef.current = analyser;
+
+      setTestMicActive(true);
+
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const tick = () => {
+        analyser.getByteTimeDomainData(data);
+        // compute normalized RMS
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / data.length);
+        setMicLevel(rms);
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('startTestMic failed', err);
+      setTestMicActive(false);
+    }
+  }
+
+  function stopTestMic() {
+    try {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      analyserRef.current = null;
+      if (testMicStreamRef.current) {
+        for (const t of testMicStreamRef.current.getTracks()) t.stop();
+        testMicStreamRef.current = null;
+      }
+    } finally {
+      setTestMicActive(false);
+      setMicLevel(0);
+    }
+  }
+
+  // cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopTestMic();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function stopAndSave() {
     if (isStopping) return;
     setIsStopping(true);
 
     try {
       const sidecar = window.sidecar;
-      if (!sidecar) throw new Error('Electron preload bridge is not available.');
+      if (!sidecar) throw new Error('Desktop app required — run the app via the Electron desktop (npm run dev).');
 
       const state = recorderRef.current;
       const recorder = state.mediaRecorder;
@@ -227,7 +358,7 @@ export function RecordingScreen() {
         }
 
         const procJson = (await procRes.json()) as {
-          transcript: { text?: string; segments?: Array<{ start: number; end: number; text: string }> };
+          transcript: { text?: string; segments?: Array<{ start: number; end: number; text: string; speaker?: string }> };
           summary: { bullets?: string[]; action_items?: string[] };
         };
 
@@ -248,7 +379,8 @@ export function RecordingScreen() {
               ? segs.map((s, idx) => ({
                   startMs: Math.floor(s.start * 1000),
                   endMs: Math.floor(s.end * 1000),
-                  speaker: `Speaker ${idx % 2 === 0 ? 1 : 2}`,
+                  // Backend may add `speaker` when diarization is enabled; fallback if absent.
+                  speaker: (s as any).speaker ?? 'Speaker 1',
                   text: s.text,
                 }))
               : [
@@ -303,6 +435,41 @@ export function RecordingScreen() {
       </div>
 
       <div className="grid gap-4">
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input
+              type="checkbox"
+              checked={micOnly}
+              onChange={(e) => setMicOnly(e.target.checked)}
+            />
+            Force mic-only
+          </label>
+
+          <div className="ml-auto text-sm">
+            <button
+              type="button"
+              disabled={isRecording || testMicActive}
+              onClick={async () => {
+                if (testMicActive) {
+                  // stop
+                  stopTestMic();
+                } else {
+                  await startTestMic();
+                }
+              }}
+              className="rounded-md bg-slate-100 px-3 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {testMicActive ? 'Stop Mic Test' : 'Test Mic'}
+            </button>
+          </div>
+        </div>
+
+        <div className="h-3 w-full rounded bg-slate-100">
+          <div
+            className="h-3 rounded bg-rose-500"
+            style={{ width: `${Math.min(100, Math.round(micLevel * 100))}%` }}
+          />
+        </div>
         <div className="flex items-center justify-between rounded-md border border-slate-200 px-4 py-3">
           <div className="text-sm text-slate-600">Timer</div>
           <div className="font-mono text-lg font-semibold">{elapsedLabel}</div>

@@ -1,0 +1,5 @@
+# Heavy optional deps for diarization (requires torch)
+# Install a compatible PyTorch build first, then:
+#   pip install -r backend/requirements-diarization.txt
+
+pyannote.audio==3.3.2

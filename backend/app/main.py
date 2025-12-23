@@ -8,7 +8,7 @@ from fastapi.responses import PlainTextResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .db import get_recording, init_db, insert_recording, update_processing_result
-from .processing import convert_to_wav_16k_mono, simple_summary, transcribe_with_whisper
+from .processing import convert_to_wav_16k_mono, simple_summary, summarize_with_ollama, transcribe_with_whisper
 from .storage import get_recordings_dir
 
 app = FastAPI(title="Side-Car Local Backend", version="0.1.0")
@@ -65,7 +65,8 @@ def process_recording(recording_id: str):
     try:
         convert_to_wav_16k_mono(raw_path, wav_path)
         transcript = transcribe_with_whisper(wav_path)
-        summary = simple_summary(transcript.get("text") or "")
+        text = transcript.get("text") or ""
+        summary = summarize_with_ollama(text) or simple_summary(text)
 
         update_processing_result(recording_id=recording_id, transcript=transcript, summary=summary)
 
